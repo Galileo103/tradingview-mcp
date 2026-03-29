@@ -17,6 +17,7 @@ from tradingview_mcp.core.utils.validators import sanitize_timeframe, sanitize_e
 from tradingview_mcp.core.services.sentiment_service import analyze_sentiment
 from tradingview_mcp.core.services.news_service import fetch_news_summary
 from tradingview_mcp.core.services.yahoo_finance_service import get_price, get_prices_bulk, get_market_snapshot
+from tradingview_mcp.core.services.backtest_service import run_backtest, compare_strategies as _compare_strategies
 
 try:
     from tradingview_ta import TA_Handler, get_multiple_analysis
@@ -2963,9 +2964,55 @@ def combined_analysis(symbol: str, exchange: str = "NASDAQ", timeframe: str = "1
 
 
 @mcp.tool()
+def backtest_strategy(
+    symbol: str,
+    strategy: str,
+    period: str = "1y",
+    initial_capital: float = 10000.0,
+) -> dict:
+    """Backtest a trading strategy on historical daily data and get performance metrics.
+
+    Args:
+        symbol:          Yahoo Finance symbol — stocks (AAPL, TSLA), crypto (BTC-USD, ETH-USD),
+                         ETFs (SPY, QQQ), indices (^GSPC)
+        strategy:        Trading strategy to test:
+                           'rsi'       — Buy oversold (RSI<30), Sell overbought (RSI>70)
+                           'bollinger' — Buy at lower Bollinger Band, Sell at middle band
+                           'macd'      — Buy on MACD golden cross, Sell on death cross
+                           'ema_cross' — Buy EMA20>EMA50 crossover, Sell on reversal
+        period:          Historical data period: '1mo', '3mo', '6mo', '1y', '2y'
+        initial_capital: Starting capital in USD (default: $10,000)
+
+    Returns:
+        Full backtest report: win rate, total return, max drawdown, profit factor,
+        best/worst trade, trade log, vs buy-and-hold benchmark.
+    """
+    return run_backtest(symbol, strategy, period, initial_capital)
+
+
+@mcp.tool()
+def compare_strategies(
+    symbol: str,
+    period: str = "1y",
+    initial_capital: float = 10000.0,
+) -> dict:
+    """Run all 4 strategies (RSI, Bollinger, MACD, EMA Cross) on the same symbol
+    and return a ranked performance leaderboard.
+
+    Args:
+        symbol:          Yahoo Finance symbol (AAPL, BTC-USD, SPY…)
+        period:          Historical data period: '1mo', '3mo', '6mo', '1y', '2y'
+        initial_capital: Starting capital in USD (default: $10,000)
+
+    Returns:
+        Ranked leaderboard of all 4 strategies vs buy-and-hold benchmark.
+    """
+    return _compare_strategies(symbol, period, initial_capital)
+
+
+@mcp.tool()
 def yahoo_price(symbol: str) -> dict:
     """Real-time price quote from Yahoo Finance for any stock, crypto, ETF or index.
-    Uses rotating residential proxy for reliable access.
 
     Args:
         symbol: Yahoo Finance symbol. Examples:
@@ -2983,7 +3030,7 @@ def yahoo_price(symbol: str) -> dict:
 def market_snapshot() -> dict:
     """Global market overview: major indices (S&P500, NASDAQ, Dow, VIX),
     top crypto (BTC, ETH, SOL, BNB), FX rates, and key ETFs.
-    Powered by Yahoo Finance via rotating residential proxy.
+    Powered by Yahoo Finance.
     """
     return get_market_snapshot()
 
