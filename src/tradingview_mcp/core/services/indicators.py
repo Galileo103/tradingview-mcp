@@ -1195,19 +1195,7 @@ def compute_stock_score(indicators: Dict, change_pct_rank: Optional[float] = Non
 
 
 # Keep old function as alias for backward compatibility
-def compute_momentum_score(indicators: Dict) -> Optional[Dict]:
-    """Legacy wrapper — calls compute_stock_score without cross-sectional rank."""
-    result = compute_stock_score(indicators)
-    if result:
-        result["momentum_grade"] = result.pop("grade", "")
-        result["momentum_score"] = result.pop("score", 0)
-    return result
 
-
-# ---------------------------------------------------------------------------
-# LAYER B — Trade Setup Engine
-# Answers: "How do I enter, target, and control risk?"
-# ---------------------------------------------------------------------------
 
 def compute_trade_setup(indicators: Dict) -> Optional[Dict]:
     """Generate entry points, stop-loss, targets, and S/R levels.

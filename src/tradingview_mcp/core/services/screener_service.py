@@ -24,10 +24,7 @@ from tradingview_mcp.core.errors import (
     is_error,
     make_error,
 )
-from tradingview_mcp.core.types import (
-    IndicatorMap, MultiRow, Row,
-    percent_change, tf_to_tv_resolution,
-)
+from tradingview_mcp.core.types import IndicatorMap, Row
 from tradingview_mcp.core.services.coinlist import exchanges_listing_symbol, load_symbols
 from tradingview_mcp.core.services.indicators import compute_metrics
 from tradingview_mcp.core.utils.validators import (
@@ -360,96 +357,6 @@ def fetch_trending_analysis(
 
     return all_coins[:limit]
 
-
-# ── Multi-timeframe screener ───────────────────────────────────────────────────
-
-def fetch_multi_changes(
-    exchange: str,
-    timeframes: Optional[List[str]],
-    base_timeframe: str = "4h",
-    limit: Optional[int] = None,
-    cookies: Any = None,
-) -> List[MultiRow]:
-    """
-    Fetch open/close data across multiple timeframes using tradingview-screener.
-
-    Args:
-        exchange:       Exchange identifier (empty string = all markets).
-        timeframes:     List of timeframe strings; defaults to [15m, 1h, 4h, 1D].
-        base_timeframe: Primary timeframe for indicator columns.
-        limit:          Maximum rows from screener (None = no cap).
-        cookies:        Optional cookies for authenticated screener requests.
-
-    Returns:
-        List of MultiRow dicts with per-timeframe change percentages.
-    """
-    if not _SCREENER_AVAILABLE:
-        raise RuntimeError("tradingview-screener missing; run `uv sync`.")
-
-    tfs = timeframes or ["15m", "1h", "4h", "1D"]
-    suffix_map: dict[str, str] = {}
-    for tf in tfs:
-        s = tf_to_tv_resolution(tf)
-        if s:
-            suffix_map[tf] = s
-    if not suffix_map:
-        suffix_map = {base_timeframe: tf_to_tv_resolution(base_timeframe) or "240"}
-
-    base_suffix = tf_to_tv_resolution(base_timeframe) or next(iter(suffix_map.values()))
-    cols: list[str] = []
-    seen: set[str] = set()
-    for tf, s in suffix_map.items():
-        for c in (f"open|{s}", f"close|{s}"):
-            if c not in seen:
-                cols.append(c)
-                seen.add(c)
-    for c in (
-        f"SMA20|{base_suffix}",
-        f"BB.upper|{base_suffix}",
-        f"BB.lower|{base_suffix}",
-        f"volume|{base_suffix}",
-    ):
-        if c not in seen:
-            cols.append(c)
-            seen.add(c)
-
-    market = get_market_type(exchange) if exchange else "crypto"
-    q = Query().set_markets(market).select(*cols)
-    if exchange:
-        q = q.where(Column("exchange") == exchange.upper())
-    if limit:
-        q = q.limit(int(limit))
-
-    # Route through resilience layer (retry + stale-while-error).
-    mc_cache_key = (
-        "screener_multichanges_v1",
-        (exchange or "").upper(),
-        tuple(sorted(suffix_map.keys())),
-        base_timeframe,
-        int(limit) if limit else None,
-    )
-    _total, df = _scan_with_retry(q, cookies=cookies, cache_key=mc_cache_key)
-    if df is None or df.empty:
-        return []
-
-    out: List[MultiRow] = []
-    for _, r in df.iterrows():
-        symbol = r.get("ticker")
-        changes: dict[str, Optional[float]] = {}
-        for tf, s in suffix_map.items():
-            o = r.get(f"open|{s}")
-            c = r.get(f"close|{s}")
-            changes[tf] = percent_change(o, c)
-        base_ind = IndicatorMap(
-            open=r.get(f"open|{base_suffix}"),
-            close=r.get(f"close|{base_suffix}"),
-            SMA20=r.get(f"SMA20|{base_suffix}"),
-            BB_upper=r.get(f"BB.upper|{base_suffix}"),
-            BB_lower=r.get(f"BB.lower|{base_suffix}"),
-            volume=r.get(f"volume|{base_suffix}"),
-        )
-        out.append(MultiRow(symbol=symbol, changes=changes, base_indicators=base_ind))
-    return out
 
 
 # ── Candle pattern analysis ────────────────────────────────────────────────────

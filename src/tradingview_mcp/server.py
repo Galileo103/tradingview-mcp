@@ -1128,6 +1128,21 @@ def exchanges_list() -> str:
     return "Common exchanges: KUCOIN, BINANCE, BYBIT, MEXC, BITGET, OKX, COINBASE, GATEIO, HUOBI, BITFINEX, BIST, EGX, NASDAQ, NYSE, TWSE, TPEX"
 
 
+# ── Health endpoint (streamable-http transport) ───────────────────────────────
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health(_request):
+    """Liveness probe for the Dockerfile HEALTHCHECK and orchestrators.
+
+    FastMCP's streamable-http transport serves only /mcp by default, so the
+    container HEALTHCHECK against /health cycled every container to
+    `unhealthy` — breaking compose `condition: service_healthy` and swarm
+    restarts. Cheap 200, no upstream calls.
+    """
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok"})
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 # ---------------------------------------------------------------------------
