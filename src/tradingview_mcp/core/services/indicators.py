@@ -7,12 +7,10 @@ def compute_change(open_price: float, close: float) -> float:
 
 
 def compute_bbw(sma: float, bb_upper: float, bb_lower: float) -> Optional[float]:
+    # `not sma` already excludes 0 (and None), so no ZeroDivisionError here.
     if not sma:
         return None
-    try:
-        return (bb_upper - bb_lower) / sma
-    except ZeroDivisionError:
-        return None
+    return (bb_upper - bb_lower) / sma
 
 
 def compute_bb_rating_signal(close: float, bb_upper: float, bb_middle: float, bb_lower: float) -> Tuple[int, str]:
@@ -209,7 +207,14 @@ def extract_extended_indicators(indicators: Dict) -> Dict:
     atr = {
         "value": _safe_round(atr_value, 4),
         "percent_of_price": _safe_round(atr_pct, 2),
-        "volatility": "High" if atr_pct and atr_pct > 3 else "Medium" if atr_pct and atr_pct > 1.5 else "Low",
+        # Missing ATR is "Unknown", not "Low" — asserting calm markets on
+        # absent data misleads downstream risk sizing.
+        "volatility": (
+            "Unknown" if atr_pct is None
+            else "High" if atr_pct > 3
+            else "Medium" if atr_pct > 1.5
+            else "Low"
+        ),
     }
 
     # --- MACD ---
@@ -363,7 +368,7 @@ def extract_extended_indicators(indicators: Dict) -> Dict:
             ao_signal = "Bullish"
             if ao_prev is not None and ao_value > ao_prev:
                 ao_signal = "Bullish (Rising)"
-        else:
+        elif ao_value < 0:  # exactly 0 stays Neutral, not Bearish
             ao_signal = "Bearish"
             if ao_prev is not None and ao_value < ao_prev:
                 ao_signal = "Bearish (Falling)"
@@ -1338,7 +1343,7 @@ def compute_trade_setup(indicators: Dict) -> Optional[Dict]:
 # Answers: "Is this setup actually tradable?"
 # ---------------------------------------------------------------------------
 
-def compute_trade_quality(indicators: Dict, stock_score: int, trade_setup: Dict) -> Dict:
+def compute_trade_quality(indicators: Dict, trade_setup: Dict) -> Dict:
     """Score the trade setup quality out of 100.
 
     Sections:
@@ -1586,11 +1591,11 @@ def analyze_fibonacci_position(close: float, fib_levels: Dict) -> Dict:
         if golden_lo <= close <= golden_hi:
             key_zone = "Golden Pocket (0.618-0.786)"
 
-    if key_zone is None and fib_5:
+    if key_zone is None and fib_5 and close:
         if abs(close - fib_5) / close * 100 < 1.5:
             key_zone = "50% Retracement Zone"
 
-    if key_zone is None and fib_618:
+    if key_zone is None and fib_618 and close:
         if abs(close - fib_618) / close * 100 < 1.5:
             key_zone = "0.618 Level (Golden Ratio)"
 

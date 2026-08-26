@@ -72,7 +72,10 @@ def _format_quote(symbol: str, chart_result: dict) -> dict:
     """Pure formatter — no I/O. Shared by sync and async paths."""
     meta = chart_result.get("meta", {})
     price = meta.get("regularMarketPrice")
-    prev_close = _get_previous_close(chart_result) or price
+    # A missing previous close stays None — substituting the current price
+    # silently reported change=0.0, indistinguishable from a genuinely flat
+    # session.
+    prev_close = _get_previous_close(chart_result)
     chg = round(price - prev_close, 4) if (price and prev_close) else None
     chg_pct = (
         round((price - prev_close) / prev_close * 100, 2)

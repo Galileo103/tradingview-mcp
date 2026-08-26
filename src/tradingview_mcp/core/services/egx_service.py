@@ -561,7 +561,7 @@ def run_egx_sector_scanner(
             if result["score"] >= 70:
                 setup = compute_trade_setup(ind)
                 if setup:
-                    quality = compute_trade_quality(ind, result["score"], setup)
+                    quality = compute_trade_quality(ind, setup)
                     entry["trade_setup"] = {
                         "setup_types": setup["setup_types"],
                         "entry_points": setup["entry_points"],
@@ -847,7 +847,7 @@ def screen_egx_stocks(
             if result["score"] >= 70:
                 setup = compute_trade_setup(ind)
                 if setup:
-                    quality = compute_trade_quality(ind, result["score"], setup)
+                    quality = compute_trade_quality(ind, setup)
                     stock_entry["trade_setup"] = {
                         "setup_types": setup["setup_types"],
                         "entry_points": setup["entry_points"],
@@ -945,7 +945,7 @@ def generate_egx_trade_plan(symbol: str, timeframe: str = "1D") -> dict:
         return {"error": f"Could not compute stock score for {full_symbol}"}
 
     setup = compute_trade_setup(ind)
-    quality = compute_trade_quality(ind, score_result["score"], setup) if setup else None
+    quality = compute_trade_quality(ind, setup) if setup else None
     extended = extract_extended_indicators(ind)
 
     output: dict = {

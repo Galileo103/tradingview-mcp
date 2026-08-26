@@ -29,7 +29,6 @@ from tradingview_mcp.core.services.coinlist import exchanges_listing_symbol, loa
 from tradingview_mcp.core.services.indicators import compute_metrics
 from tradingview_mcp.core.utils.validators import (
     EXCHANGE_SCREENER,
-    get_market_type,
     get_tv_exchange_prefix,
 )
 
@@ -48,7 +47,6 @@ except ImportError:
 
 try:
     from tradingview_screener import Query
-    from tradingview_screener.column import Column
     _SCREENER_AVAILABLE = True
 except ImportError:
     _SCREENER_AVAILABLE = False
@@ -682,7 +680,7 @@ def analyze_coin(
                         "supports": setup["supports"],
                         "resistances": setup["resistances"],
                     }
-                    quality = compute_trade_quality(indicators, score_result["score"], setup)
+                    quality = compute_trade_quality(indicators, setup)
                     if quality:
                         trade_data["trade_quality_score"] = quality["trade_quality_score"]
                         trade_data["trade_quality"] = quality["quality"]
@@ -719,9 +717,11 @@ def analyze_coin(
             "market_sentiment": {
                 "overall_rating": metrics["rating"],
                 "buy_sell_signal": metrics["signal"],
+                # bbw=None means "unknown", not "calm market".
                 "volatility": (
-                    "High" if metrics["bbw"] and metrics["bbw"] > 0.05
-                    else "Medium" if metrics["bbw"] and metrics["bbw"] > 0.02
+                    "Unknown" if metrics["bbw"] is None
+                    else "High" if metrics["bbw"] > 0.05
+                    else "Medium" if metrics["bbw"] > 0.02
                     else "Low"
                 ),
                 "momentum": "Bullish" if metrics["change"] > 0 else "Bearish",
