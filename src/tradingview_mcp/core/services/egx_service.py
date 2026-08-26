@@ -67,12 +67,21 @@ def get_egx_market_overview(timeframe: str = "1D", limit: int = 10) -> dict:
     screener = EXCHANGE_SCREENER.get("egx", "egypt")
     all_stocks: List[dict] = []
     batch_size = 200
+    batches_failed = 0
+    symbols_skipped = 0
+    first_error: str | None = None
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
         try:
             analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
-        except Exception:
+        except Exception as exc:
+            # Count instead of swallowing outright — a systemic failure
+            # (auth change, schema change) used to surface only as
+            # "No data returned for EGX stocks" with zero diagnostic.
+            batches_failed += 1
+            if first_error is None:
+                first_error = repr(exc)
             continue
 
         for sym, data in analysis.items():
@@ -96,10 +105,15 @@ def get_egx_market_overview(timeframe: str = "1D", limit: int = 10) -> dict:
                     }
                 )
             except Exception:
+                symbols_skipped += 1
                 continue
 
     if not all_stocks:
-        return {"error": "No data returned for EGX stocks", "timeframe": timeframe}
+        out = {"error": "No data returned for EGX stocks", "timeframe": timeframe}
+        if batches_failed:
+            out["batches_failed"] = batches_failed
+            out["first_error"] = first_error
+        return out
 
     by_change = sorted(all_stocks, key=lambda x: x["changePercent"], reverse=True)
     by_volume = sorted(all_stocks, key=lambda x: x["volume"] or 0, reverse=True)
@@ -108,6 +122,8 @@ def get_egx_market_overview(timeframe: str = "1D", limit: int = 10) -> dict:
         "exchange": "EGX",
         "timeframe": timeframe,
         "total_analyzed": len(all_stocks),
+        "batches_failed": batches_failed,
+        "symbols_skipped": symbols_skipped,
         "top_gainers": by_change[:limit],
         "top_losers": by_change[-limit:][::-1],
         "most_active": by_volume[:limit],
@@ -1094,6 +1110,14 @@ def analyze_egx_fibonacci(
                 "hint": "Period high/low data not available for this symbol",
             }
 
+    if swing_low <= 0:
+        # Possible via the R3/S3 pivot fallback above; dividing by it would
+        # raise an uncaught ZeroDivisionError out of the tool.
+        return {
+            "error": "Invalid swing low (<= 0) — cannot compute Fibonacci range",
+            "swing_high": swing_high,
+            "swing_low": swing_low,
+        }
     swing_range_pct = ((swing_high - swing_low) / swing_low) * 100
     if swing_range_pct < 2:
         return {

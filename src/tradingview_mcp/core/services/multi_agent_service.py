@@ -33,9 +33,13 @@ def calculate_sentiment_score(indicators: dict, price_change: float) -> dict:
     Returns:
         Dict with 'score' (raw), 'normalized' (-3..+3), and 'signals' list.
     """
-    rsi = indicators.get("RSI", 50.0)
-    macd = indicators.get("MACD.macd", 0.0)
-    macd_signal = indicators.get("MACD.signal", 0.0)
+    # TradingView returns explicit nulls, so dict.get defaults don't fire —
+    # `indicators.get("RSI", 50.0)` yields None when the key exists as None,
+    # and `None > 60` crashes the whole tool.
+    rsi = indicators.get("RSI")
+    rsi = 50.0 if rsi is None else rsi
+    macd = indicators.get("MACD.macd")
+    macd_signal = indicators.get("MACD.signal")
 
     score = 0
     signals: list[str] = []
@@ -80,9 +84,11 @@ def calculate_risk_score(indicators: dict, bbw: float) -> dict:
     Returns:
         Dict with 'score' (negative = more risk), 'warnings' list, and 'level' label.
     """
-    close = indicators.get("close", 0.0)
-    sma20 = indicators.get("SMA20", close)
-    ema200 = indicators.get("EMA200", close)
+    # Explicit-null-safe reads (see calculate_sentiment_score).
+    close = indicators.get("close") or 0.0
+    sma20 = indicators.get("SMA20") or close
+    ema200 = indicators.get("EMA200") or close
+    bbw = bbw or 0.0
 
     score = 0
     warnings: list[str] = []
@@ -94,7 +100,7 @@ def calculate_risk_score(indicators: dict, bbw: float) -> dict:
         score += 1
         warnings.append("Low volatility (Squeeze)")
 
-    if ema200 is not None and close < ema200:
+    if ema200 and close < ema200:
         score -= 1
         warnings.append("Price below 200 EMA (Long-term bearish structure)")
 
@@ -146,10 +152,10 @@ def run_multi_agent_analysis(
     if not metrics:
         return {"error": f"Could not compute metrics for {symbol}"}
 
-    price = metrics.get("price", 0.0)
-    change = metrics.get("change", 0.0)
-    bb_rating = metrics.get("rating", 0)
-    bbw = metrics.get("bbw", 0.0)
+    price = metrics.get("price") or 0.0
+    change = metrics.get("change") or 0.0
+    bb_rating = metrics.get("rating") or 0
+    bbw = metrics.get("bbw") or 0.0  # compute_metrics returns bbw=None sometimes
 
     # Agent 1 — Technical Analyst
     tech_analyst = {
@@ -159,7 +165,7 @@ def run_multi_agent_analysis(
         "key_observations": [
             f"Price is {price} ({change:+.2f}%)",
             f"Bollinger Rating: {bb_rating} ({metrics.get('signal', 'Neutral')})",
-            f"RSI: {indicators.get('RSI', 50):.1f}",
+            f"RSI: {indicators.get('RSI') or 50.0:.1f}",
         ],
     }
 

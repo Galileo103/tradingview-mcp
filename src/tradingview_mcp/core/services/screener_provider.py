@@ -178,6 +178,10 @@ def _wait_for_failure_cooldown() -> None:
 
 _SCREENER_CACHE: Dict[Tuple, Tuple[float, Any]] = {}
 _SCREENER_CACHE_LOCK = _RLock()
+# Entries were only ever popped on a stale *lookup*, so a long-running server
+# serving many distinct (symbols, interval) tuples grew without bound. Evict
+# oldest-first past this cap.
+_SCREENER_CACHE_MAX_ENTRIES = 256
 
 
 def _cache_get(key: Tuple):
@@ -224,6 +228,9 @@ def _cache_set(key: Tuple, payload: Any) -> None:
         return
     with _SCREENER_CACHE_LOCK:
         _SCREENER_CACHE[key] = (_time.time(), payload)
+        while len(_SCREENER_CACHE) > _SCREENER_CACHE_MAX_ENTRIES:
+            oldest = min(_SCREENER_CACHE, key=lambda k: _SCREENER_CACHE[k][0])
+            _SCREENER_CACHE.pop(oldest, None)
 
 
 # --- Throttle for tradingview_ta calls (added 2026-05-15) -----------------

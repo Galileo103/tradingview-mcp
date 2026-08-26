@@ -895,7 +895,10 @@ def stock_options_chain(symbol: str, expiry: Optional[str] = None) -> dict:
           open_interest, implied_volatility, in_the_money, expiration}
         - puts: same shape as calls
     """
-    return get_options_chain(symbol, expiry)
+    try:
+        return get_options_chain(symbol, expiry)
+    except Exception as e:
+        return exception_to_envelope(e, context="stock_options_chain")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Unusual Options Activity", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -935,7 +938,10 @@ def stock_options_unusual_activity(
           v_oi_ratio, last_price, implied_volatility, in_the_money,
           strike_vs_spot_pct (moneyness)}
     """
-    return get_unusual_options_activity(symbol, top_n, min_volume, expiries)
+    try:
+        return get_unusual_options_activity(symbol, top_n, min_volume, expiries)
+    except Exception as e:
+        return exception_to_envelope(e, context="stock_options_unusual_activity")
 
 
 # ── Futures tools ─────────────────────────────────────────────────────────────

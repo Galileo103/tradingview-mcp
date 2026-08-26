@@ -19,6 +19,7 @@ from typing import Any, List, Optional
 from tradingview_mcp.core.errors import (
     BatchExecutionError,
     ErrorCode,
+    PartialDataError,
     ScreenerServiceError,
     is_error,
     make_error,
@@ -344,6 +345,19 @@ def fetch_trending_analysis(
         )
 
     all_coins.sort(key=lambda x: x["changePercent"], reverse=(sort != "asc"))
+
+    # Aborted mid-scan with some rows: surface partiality instead of returning
+    # a plain list indistinguishable from a complete scan (the abort reason
+    # used to go only to stderr). The tool boundary turns this into a
+    # PARTIAL_DATA envelope that still carries the rows.
+    if aborted_reason is not None:
+        raise PartialDataError(
+            rows=all_coins[:limit],
+            batches_attempted=batches_attempted,
+            total_batches=total_batches,
+            aborted_reason=aborted_reason,
+        )
+
     return all_coins[:limit]
 
 
@@ -715,7 +729,10 @@ def analyze_coin(
             return symbol_not_found_error(symbol, exchange, timeframe=timeframe)
 
         data = analysis[full_symbol]
-        indicators = data.indicators
+        # Shallow-copy: the analysis object may come from the provider's
+        # shared TTL cache, and writing ATR into the cached dict races with
+        # other threads reading the same entry.
+        indicators = dict(data.indicators)
         # tradingview_ta omits the ATR column from its analysis payload, leaving
         # downstream consumers (stop-loss sizing, trade quality, volatility
         # scoring) with a None they can't act on. Pull it from the screener
@@ -1101,7 +1118,9 @@ def run_multi_timeframe_analysis(
             consecutive_failures = 0  # Reset on real success.
 
             data = analysis[symbol]
-            indicators = data.indicators
+            # Copy before mutating — the dict may be shared via the provider's
+            # TTL cache (see analyze_coin).
+            indicators = dict(data.indicators)
             # Backfill ATR per-timeframe — the ATR column on the scanner is
             # resolution-suffixed, so we cannot share the response across the
             # 5 timeframes. One POST per timeframe is acceptable (5 total)
