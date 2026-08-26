@@ -164,11 +164,12 @@ def top_losers(exchange: str = "KUCOIN", timeframe: str = "15m", limit: int = 25
     timeframe = sanitize_timeframe(timeframe, "15m")
     limit = max(1, min(limit, 50))
     try:
-        rows = fetch_trending_analysis(exchange, timeframe=timeframe, limit=limit)
+        # sort="asc" makes the service sort BEFORE truncating to limit —
+        # re-sorting after fetch returned the smallest of the top GAINERS.
+        rows = fetch_trending_analysis(exchange, timeframe=timeframe, limit=limit, sort="asc")
     except Exception as e:
         return exception_to_envelope(e, context="top_losers")
-    rows.sort(key=lambda x: x["changePercent"])
-    return [{"symbol": r["symbol"], "changePercent": r["changePercent"], "indicators": dict(r["indicators"])} for r in rows[:limit]]
+    return [{"symbol": r["symbol"], "changePercent": r["changePercent"], "indicators": dict(r["indicators"])} for r in rows]
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Bollinger Squeeze Scanner", readOnlyHint=True, destructiveHint=False, openWorldHint=True))

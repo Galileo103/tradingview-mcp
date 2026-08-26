@@ -146,11 +146,13 @@ def volume_breakout_scan(
 
                 price_change = ((close - open_price) / open_price) * 100 if open_price > 0 else 0
 
-                if sma20_volume and sma20_volume > 0:
-                    volume_ratio = volume / sma20_volume
-                else:
-                    avg_estimate = volume / 2
-                    volume_ratio = volume / avg_estimate if avg_estimate > 0 else 1
+                # No volume baseline → no volume signal. The old fallback
+                # (volume / (volume/2)) was always exactly 2.0, so every
+                # baseline-less symbol passed the default 2.0x gate and the
+                # scan flooded with fake "breakouts".
+                if not sma20_volume or sma20_volume <= 0:
+                    continue
+                volume_ratio = volume / sma20_volume
 
                 if abs(price_change) >= price_change_min and volume_ratio >= volume_multiplier:
                     rsi = ind.get("RSI", 50)

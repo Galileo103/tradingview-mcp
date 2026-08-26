@@ -292,6 +292,22 @@ _STRATEGY_MAP = {
     "triple_ema":       _run_triple_ema,
 }
 
+# Bars each strategy needs before its slowest indicator produces signals.
+# Walk-forward test slices shorter than this cannot trade at all — scoring
+# them 0.0 falsely reads as "fails out-of-sample" when the real cause is
+# "window too small to even warm up".
+_STRATEGY_WARMUP_BARS = {
+    "rsi":              14,
+    "bollinger":        20,
+    "macd":             35,   # slow EMA 26 + signal 9
+    "ema_cross":        50,   # slow EMA
+    "supertrend":       10,   # ATR period
+    "donchian":         20,
+    "rsi_pullback":     200,  # SMA200 (excluded from walk-forward anyway)
+    "keltner_breakout": 20,   # EMA20 / ATR14
+    "triple_ema":       200,  # trend EMA (excluded from walk-forward anyway)
+}
+
 
 # ─── Transaction Costs ────────────────────────────────────────────────────────
 
@@ -643,11 +659,16 @@ def walk_forward_backtest(
       - Train (70%): in-sample strategy simulation
       - Test  (30%): out-of-sample forward validation
 
-    Robustness score (test_return / train_return):
+    Robustness score (test_return / train_return; train/test when both are
+    negative, so losing LESS out-of-sample scores higher):
       >= 0.8  → ROBUST    (no overfitting)
       >= 0.5  → MODERATE  (some degradation)
       >= 0.2  → WEAK      (likely overfitted)
       < 0.2   → OVERFITTED (do not trade live)
+
+    Folds whose test slice is shorter than the strategy's indicator warmup
+    are flagged ``insufficient_data`` and excluded from the average — a
+    window too small to trade is not evidence of out-of-sample failure.
     """
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
@@ -682,11 +703,13 @@ def walk_forward_backtest(
     if len(candles) < min_bars:
         return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
 
-    fn        = _STRATEGY_MAP[strategy]
-    fold_size = len(candles) // n_splits
+    fn          = _STRATEGY_MAP[strategy]
+    fold_size   = len(candles) // n_splits
+    warmup_bars = _STRATEGY_WARMUP_BARS.get(strategy, 20)
 
     folds: list[dict]   = []
     all_test_trades: list[dict] = []
+    insufficient_folds = 0
 
     for fold_i in range(n_splits):
         start  = fold_i * fold_size
@@ -700,6 +723,11 @@ def walk_forward_backtest(
         if len(train_c) < 20 or len(test_c) < 5:
             continue
 
+        # A test slice too short for the strategy's slowest indicator can
+        # never trade — recording fold_rob=0.0 would falsely count it as
+        # out-of-sample failure. Mark it and exclude it from the average.
+        insufficient = len(test_c) < warmup_bars + 5
+
         train_t = _apply_costs(fn(train_c), commission_pct, slippage_pct)
         test_t  = _apply_costs(fn(test_c),  commission_pct, slippage_pct)
         train_m = _calc_metrics(train_t, initial_capital, interval)
@@ -708,10 +736,17 @@ def walk_forward_backtest(
         all_test_trades.extend(test_t)
 
         tr, te = train_m["total_return_pct"], test_m["total_return_pct"]
-        if tr == 0:
+        if insufficient:
+            fold_rob = None
+            insufficient_folds += 1
+        elif tr == 0:
             fold_rob = 1.0 if te == 0 else 0.0
         elif tr < 0 and te < 0:
-            fold_rob = round(min(te / tr, 2.0), 2)
+            # Both windows lost money: robustness = did the test lose LESS?
+            # tr/te > 1 when the test loss is smaller than the train loss.
+            # (The old te/tr rewarded losing MORE out-of-sample: train -1%,
+            # test -2% scored a capped 2.0 — "maximally robust".)
+            fold_rob = round(max(min(tr / te, 2.0), 0.0), 2)
         elif tr < 0:
             fold_rob = 0.0
         else:
@@ -732,14 +767,21 @@ def walk_forward_backtest(
             "test_trades":           test_m["total_trades"],
             "test_sharpe":           test_m["sharpe_ratio"],
             "fold_robustness_score": fold_rob,
+            "insufficient_data":     insufficient,
         })
 
     if not folds:
         return {"error": "Could not generate any valid folds. Try a longer period or fewer splits."}
 
-    avg_train  = round(statistics.mean(f["train_return_pct"] for f in folds), 2)
-    avg_test   = round(statistics.mean(f["test_return_pct"]  for f in folds), 2)
-    avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in folds), 2)
+    scored_folds = [f for f in folds if not f["insufficient_data"]]
+    if not scored_folds:
+        return {"error": (f"Every test window is shorter than the ~{warmup_bars}-bar "
+                          f"warmup '{strategy}' needs to trade at all. Use a longer "
+                          f"period or fewer splits."), "folds": folds}
+
+    avg_train  = round(statistics.mean(f["train_return_pct"] for f in scored_folds), 2)
+    avg_test   = round(statistics.mean(f["test_return_pct"]  for f in scored_folds), 2)
+    avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in scored_folds), 2)
     oos_m      = _calc_metrics(all_test_trades, initial_capital, interval)
 
     if avg_robust >= 0.8:
@@ -766,7 +808,13 @@ def walk_forward_backtest(
         "avg_train_return_pct":    avg_train,
         "avg_test_return_pct":     avg_test,
         "robustness_score":        avg_robust,
+        "scored_folds":            len(scored_folds),
+        "insufficient_data_folds": insufficient_folds,
         "verdict":                 verdict,
+        "caveat": ("No parameters are optimised on the train window (fixed "
+                   "defaults run on both slices), so this score measures "
+                   "regime consistency across windows, not parameter "
+                   "overfitting in the classical sense."),
         "oos_total_trades":        oos_m["total_trades"],
         "oos_win_rate_pct":        oos_m["win_rate_pct"],
         "oos_sharpe_ratio":        oos_m["sharpe_ratio"],

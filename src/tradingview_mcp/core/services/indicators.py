@@ -53,6 +53,7 @@ def compute_metrics(indicators: Dict) -> Optional[Dict]:
 
         return {
             "price": round(close, 4),
+            "open": round(open_price, 4),
             "change": round(change, 3),
             "bbw": round(bbw, 4) if bbw is not None else None,
             "rating": rating,

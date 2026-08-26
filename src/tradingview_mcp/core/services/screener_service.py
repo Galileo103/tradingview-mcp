@@ -29,7 +29,11 @@ from tradingview_mcp.core.types import (
 )
 from tradingview_mcp.core.services.coinlist import exchanges_listing_symbol, load_symbols
 from tradingview_mcp.core.services.indicators import compute_metrics
-from tradingview_mcp.core.utils.validators import EXCHANGE_SCREENER, get_market_type
+from tradingview_mcp.core.utils.validators import (
+    EXCHANGE_SCREENER,
+    get_market_type,
+    get_tv_exchange_prefix,
+)
 
 # Resilience layer (does not require tradingview_ta; safe to import unconditionally).
 from tradingview_mcp.core.services.screener_provider import _scan_with_retry, humanize_upstream_error
@@ -193,6 +197,7 @@ def fetch_trending_analysis(
     filter_type: str = "",
     rating_filter: int = None,
     limit: int = 50,
+    sort: str = "desc",
 ) -> List[Row]:
     """
     Fetch trending coins across all available symbols in batches of 200.
@@ -203,9 +208,13 @@ def fetch_trending_analysis(
         filter_type:   Optional filter mode ('rating').
         rating_filter: BB rating value to match when filter_type == 'rating'.
         limit:         Maximum rows to return.
+        sort:          'desc' → biggest gainers first; 'asc' → biggest losers
+                       first. Sorting happens BEFORE the limit truncation —
+                       'asc' returns the market's actual losers, not the
+                       bottom of a gainers-truncated list.
 
     Returns:
-        List of Row dicts sorted by changePercent descending.
+        List of Row dicts sorted by changePercent in the requested order.
     """
     if not _TA_AVAILABLE:
         raise ScreenerServiceError(
@@ -334,7 +343,7 @@ def fetch_trending_analysis(
             first_error=first_error or "unknown",
         )
 
-    all_coins.sort(key=lambda x: x["changePercent"], reverse=True)
+    all_coins.sort(key=lambda x: x["changePercent"], reverse=(sort != "asc"))
     return all_coins[:limit]
 
 
@@ -541,10 +550,13 @@ def fetch_multi_timeframe_patterns(
             "RSI",
         ]
 
-        market = get_market_type(exchange)
-        q = Query().set_markets(market).select(*cols)
-        q = q.where(Column("exchange") == exchange.upper())
-        q = q.limit(len(symbols))
+        # Query the CALLER'S symbols. The old whole-exchange scan with
+        # .limit(len(symbols)) returned the first N arbitrary rows of the
+        # market — while the cache key below was keyed on the ignored symbol
+        # list, so different symbol lists collided onto the same wrong rows.
+        prefix = get_tv_exchange_prefix(exchange)
+        full_symbols = [s if ":" in s else f"{prefix}:{s}" for s in symbols]
+        q = Query().select(*cols).set_tickers(*full_symbols)
 
         # Route through resilience layer (retry + stale-while-error).
         cp_cache_key = (
@@ -1043,7 +1055,11 @@ def run_multi_timeframe_analysis(
     }
 
     tf_results: dict = {}
-    alignment_scores: list[int] = []
+    # (timeframe, bias) pairs recorded together at the success site. Keeping
+    # them paired matters: a bare score list zipped against the full
+    # `timeframes` later misattributes every score after a failed timeframe
+    # (1W errors → 1D's score reported under the "1W" key, and so on).
+    alignment_scores: list[tuple[str, int]] = []
 
     # Fast-fail guards: 5 timeframes × (~5s retries + 15s cooldown) ≈ 100s
     # when upstream cliffs. Bail after N consecutive failures, or when the
@@ -1100,7 +1116,7 @@ def run_multi_timeframe_analysis(
             tf_context = analyze_timeframe_context(indicators, tf)
 
             bias_num = 1 if tf_context["bias"] == "Bullish" else -1 if tf_context["bias"] == "Bearish" else 0
-            alignment_scores.append(bias_num)
+            alignment_scores.append((tf, bias_num))
 
             tf_results[tf] = {
                 "label": tf_labels.get(tf, tf),
@@ -1138,9 +1154,9 @@ def run_multi_timeframe_analysis(
                 _fill_skipped_tfs(tf_results, timeframes, "upstream cliff")
                 break
 
-    total_score = sum(alignment_scores)
-    all_bullish = all(s > 0 for s in alignment_scores) if alignment_scores else False
-    all_bearish = all(s < 0 for s in alignment_scores) if alignment_scores else False
+    total_score = sum(s for _, s in alignment_scores)
+    all_bullish = all(s > 0 for _, s in alignment_scores) if alignment_scores else False
+    all_bearish = all(s < 0 for _, s in alignment_scores) if alignment_scores else False
 
     if all_bullish:
         alignment, confidence, action = "FULLY ALIGNED BULLISH", "Very High", "STRONG BUY - All timeframes bullish. Look for pullback entry on 1H/15m."
@@ -1157,10 +1173,10 @@ def run_multi_timeframe_analysis(
     else:
         alignment, confidence, action = "MIXED/RANGING", "Low", "HOLD/NO TRADE - Timeframes conflict. Wait for alignment."
 
-    higher_tf_bias = alignment_scores[0] if alignment_scores else 0
+    higher_tf_bias = alignment_scores[0][1] if alignment_scores else 0
     divergent_tfs = [
-        timeframes[i]
-        for i, score in enumerate(alignment_scores)
+        tf
+        for tf, score in alignment_scores
         if score != 0 and score != higher_tf_bias and higher_tf_bias != 0
     ]
 
@@ -1173,7 +1189,7 @@ def run_multi_timeframe_analysis(
             "status": alignment,
             "confidence": confidence,
             "net_score": total_score,
-            "scores_by_tf": dict(zip(timeframes, alignment_scores)),
+            "scores_by_tf": dict(alignment_scores),
             "divergent_timeframes": divergent_tfs,
         },
         "recommendation": {
