@@ -551,6 +551,76 @@ def pick_fallback_exchange(symbol: str, requested_exchange: str) -> Optional[str
     return candidates[0]
 
 
+# ── TradingView symbol-search enrichment for not-found errors ────────────────
+# The chart site and the scanner are DIFFERENT backends: charts render funds,
+# certificates, and delisted symbols that the scanner (which powers every
+# analysis tool here) does not serve at all. E.g. EGX:KASABF is a fund
+# certificate — its chart URL works, but no scanner/TA call can ever return
+# data for it. When the local coinlists have no suggestion, one best-effort
+# symbol-search lookup tells the caller WHAT the symbol actually is instead
+# of leaving a bare "not found" that reads like a typo.
+
+_SYMBOL_SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/v3/"
+_SYMBOL_SEARCH_TIMEOUT_S = 6
+# Instrument types the scanner backend serves per market. Anything else
+# (fund, bond, warrant, right, index, dr …) is chart-only.
+_SCANNER_SERVED_TYPES = {"stock", "crypto", "spot", "futures", "forex", "cfd", "swap"}
+# Successful lookups only — a transient network failure must not be cached.
+_symbol_search_cache: dict[tuple, Optional[dict]] = {}
+
+
+def _parse_symbol_search(rows: list, bare: str, exchange: str) -> Optional[dict]:
+    """Pick the exact-ticker match (preferring the requested exchange)."""
+    exact = [
+        r for r in rows
+        if isinstance(r, dict) and str(r.get("symbol", "")).upper() == bare
+    ]
+    if not exact:
+        return None
+    ex = (exchange or "").strip().upper()
+    row = next((r for r in exact if str(r.get("exchange", "")).upper() == ex), exact[0])
+    return {
+        "symbol": bare,
+        "exchange": str(row.get("exchange", ""))[:20],
+        "type": str(row.get("type", ""))[:30],
+        "description": str(row.get("description", ""))[:120],
+    }
+
+
+def lookup_tradingview_instrument(symbol: str, exchange: str = "") -> Optional[dict]:
+    """Best-effort TradingView symbol-search lookup. None on any failure —
+    this only ever ENRICHES an error message and must never break one."""
+    import json as _json
+    import urllib.parse as _uparse
+    import urllib.request as _urequest
+
+    bare = (symbol or "").split(":")[-1].strip().upper()
+    if not bare:
+        return None
+    key = (bare, (exchange or "").strip().upper())
+    if key in _symbol_search_cache:
+        return _symbol_search_cache[key]
+
+    url = f"{_SYMBOL_SEARCH_URL}?{_uparse.urlencode({'text': bare, 'lang': 'en'})}"
+    req = _urequest.Request(url, headers={
+        # The endpoint 403s bare python UAs; browser-shaped headers required.
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Origin": "https://www.tradingview.com",
+        "Referer": "https://www.tradingview.com/",
+    })
+    try:
+        with _urequest.urlopen(req, timeout=_SYMBOL_SEARCH_TIMEOUT_S) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        rows = data.get("symbols") or []
+    except Exception:
+        return None  # not cached — transient failures may recover
+
+    info = _parse_symbol_search(rows, bare, exchange)
+    if len(_symbol_search_cache) < 256:
+        _symbol_search_cache[key] = info
+    return info
+
+
 def symbol_not_found_error(symbol: str, exchange: str, **context: Any) -> dict:
     """SYMBOL_NOT_FOUND envelope with actionable, locally-sourced suggestions.
 
@@ -558,10 +628,14 @@ def symbol_not_found_error(symbol: str, exchange: str, **context: Any) -> dict:
     of times (e.g. HYPEUSDT on BINANCE) because the old bare-string error gave
     no retryability signal and no alternative. This envelope says explicitly:
     not retryable here, but *these* exchanges list the ticker (from the bundled
-    coinlists — zero network cost).
+    coinlists — zero network cost). Only when the local lists have nothing
+    does ONE best-effort symbol-search call fire, to distinguish "typo" from
+    "real instrument the scanner backend doesn't serve" (fund certificates,
+    bonds, delisted names — chart-only on TradingView).
     """
     listed_on = exchanges_listing_symbol(symbol)
     message = f"No data found for {symbol} on {exchange}."
+    extra: dict[str, Any] = {}
     if listed_on:
         message += (
             " Retrying on this exchange will fail again; the symbol is listed on: "
@@ -569,14 +643,39 @@ def symbol_not_found_error(symbol: str, exchange: str, **context: Any) -> dict:
             + ". Retry with one of those as `exchange`."
         )
     else:
-        message += (
-            " No local listing found on any supported exchange — verify the ticker"
-            " spelling; retrying the same request will return the same error."
-        )
+        info = lookup_tradingview_instrument(symbol, exchange)
+        if info:
+            extra["instrument_type"] = info["type"]
+            extra["instrument_description"] = info["description"]
+            extra["instrument_exchange"] = info["exchange"]
+            if info["type"] and info["type"].lower() not in _SCANNER_SERVED_TYPES:
+                message += (
+                    f" {symbol} DOES exist on TradingView — as a {info['type']} "
+                    f"({info['description']!r} on {info['exchange']}) — but the "
+                    f"screener/analysis backend this server uses only serves "
+                    f"tradable stocks and crypto, not {info['type']}s. Its chart "
+                    f"page works because charts use a different backend. No tool "
+                    f"here can analyze it; do not retry."
+                )
+            elif info["exchange"] and info["exchange"].upper() != (exchange or "").upper():
+                message += (
+                    f" TradingView lists {symbol} as a {info['type'] or 'symbol'} on "
+                    f"{info['exchange']} — retry with exchange=\"{info['exchange']}\"."
+                )
+            else:
+                message += (
+                    " The symbol exists on TradingView but the scanner returned no "
+                    "data for it (possibly suspended from trading)."
+                )
+        else:
+            message += (
+                " No local listing found on any supported exchange — verify the ticker"
+                " spelling; retrying the same request will return the same error."
+            )
     return make_error(
         ErrorCode.SYMBOL_NOT_FOUND, message,
         retryable=False, symbol=symbol, exchange=exchange, listed_on=listed_on,
-        **context,
+        **extra, **context,
     )
 
 
