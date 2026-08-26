@@ -7,6 +7,12 @@ Defines the constituent stocks for the main EGX indices:
 - SHARIAH33: Shariah-compliant index (34 stocks)
 - EGX35-LV: Low Volatility index (35 stocks)
 - TAMAYUZ: Small/micro-cap emerging companies index (5 stocks)
+
+Constituents validated against the live TradingView egypt-market listing
+on 2026-08-26 (dead symbols pruned). Index membership itself follows the
+EGX semi-annual reviews (Feb/Aug) and must be updated from egx.com.eg
+announcements — the scanner can verify a symbol exists, not which index
+it belongs to.
 """
 from __future__ import annotations
 from typing import Dict, List
@@ -52,7 +58,8 @@ EGX70_CONSTITUENTS: List[str] = [
     "AMER",   # Amer Group
     "ATLC",   # AT Lease
     "TALM",   # Taaleem Management Services
-    "AIHC",   # Arabia Investments Holding
+    # "AIHC" (Arabia Investments Holding) removed 2026-08-26 — no longer
+    # returned by the TradingView scanner (delisted/suspended).
     "AIDC",   # Arabia Investment & Development
     "ASPI",   # Aspire Capital Holding
     "SCEM",   # Sinai Cement

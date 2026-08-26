@@ -56,6 +56,10 @@ from tradingview_mcp.core.services.marketaux_service import (
     analyze_sentiment,
     fetch_news_summary,
 )
+from tradingview_mcp.core.services.smart_money_service import (
+    analyze_smart_money,
+    scan_egx_smart_money,
+)
 from tradingview_mcp.core.services.yahoo_finance_service import (
     get_price,
     get_price_async,
@@ -588,6 +592,72 @@ def egx_fibonacci_retracement(symbol: str, lookback: str = "52W", timeframe: str
         return analyze_egx_fibonacci(symbol, lookback, timeframe)
     except Exception as e:
         return exception_to_envelope(e, context="egx_fibonacci_retracement")
+
+
+# ── Smart-money / banker-fund tools ───────────────────────────────────────────
+
+@mcp.tool(annotations=ToolAnnotations(title="Smart Money Analysis", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def smart_money_analysis(
+    symbol: str,
+    exchange: str = "EGX",
+    period: str = "6mo",
+    interval: str = "1d",
+) -> dict:
+    """Banker/hot-money proxy read for one symbol from price+volume history.
+
+    Three independent families, computed from Yahoo Finance OHLCV:
+      - mcdx_style: RSI-horizon decomposition (banker RSI50 / hot-money RSI40
+        / retail RSI14, each scaled 0-20) — sustained slow-horizon strength
+        that fast horizons can't fake reads as institutional accumulation.
+      - banker_fund_oscillator: EMA(13)-smoothed 34-bar stochastic of the
+        weighted typical price, 0-100, with BANKER_ENTRY/EXIT states.
+      - volume_flow_composite: CMF(20) + MFI(14) + OBV trend + up/down volume
+        balance → 0-100 accumulation score.
+    Plus a consensus vote across the three.
+
+    These are documented, reproducible formula variants inspired by the
+    public "banker fund" indicator family — NOT actual institutional-flow
+    data, and not copies of any closed-source script.
+
+    Args:
+        symbol: Bare ticker — EGX: "COMI", "TMGH"; US: "AAPL"; crypto pairs
+            work via Yahoo notation ("BTC-USD").
+        exchange: EGX (maps to Yahoo .CA), BIST (.IS), TADAWUL (.SR); anything
+            else passes the symbol to Yahoo unchanged.
+        period: 1mo | 3mo | 6mo | 1y | 2y (default 6mo)
+        interval: 1d (default) or 1h
+    """
+    try:
+        return analyze_smart_money(symbol, exchange, period, interval)
+    except Exception as e:
+        return exception_to_envelope(e, context="smart_money_analysis")
+
+
+@mcp.tool(annotations=ToolAnnotations(title="EGX Smart Money Scanner", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def egx_smart_money_scanner(
+    index: str = "EGX30",
+    limit: int = 10,
+    period: str = "6mo",
+    min_score: float = 0.0,
+) -> dict:
+    """Rank EGX index constituents by smart-money accumulation evidence.
+
+    Runs the full smart_money_analysis per constituent (Yahoo .CA history,
+    bounded thread pool) and ranks by the volume-flow composite score, with
+    the banker decomposition and oscillator state attached per row. Rows the
+    data source can't serve are listed under `skipped`, never silently
+    dropped.
+
+    Args:
+        index: EGX30 | EGX70 | EGX100 | SHARIAH33 | EGX35LV | TAMAYUZ
+        limit: Max ranked rows to return (default 10, max 50)
+        period: History window — 1mo | 3mo | 6mo | 1y | 2y (default 6mo)
+        min_score: Only include rows with composite score >= this (0-100)
+    """
+    try:
+        return scan_egx_smart_money(index, limit, period, min_score)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_smart_money_scanner")
 
 
 # ── Multi-timeframe analysis ───────────────────────────────────────────────────
