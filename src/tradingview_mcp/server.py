@@ -87,8 +87,8 @@ from tradingview_mcp.core.services.backtest_service import (
     walk_forward_backtest,
 )
 from tradingview_mcp.core.utils.validators import (
-    sanitize_timeframe,
-    sanitize_exchange,
+    validate_timeframe,
+    validate_exchange,
     normalize_tradingview_symbol,
     normalize_yahoo_symbol,
 )
@@ -138,10 +138,10 @@ async def top_gainers(exchange: str = "KUCOIN", timeframe: str = "15m", limit: i
         envelope ``{"error": {"code": ..., "retryable": ...}}`` — never a
         raw exception string.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
     limit = max(1, min(limit, 50))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
         # Underlying tradingview-screener is sync (uses urllib). Push to a
         # worker thread so the event loop is free for other concurrent
         # tool calls.
@@ -160,10 +160,10 @@ def top_losers(exchange: str = "KUCOIN", timeframe: str = "15m", limit: int = 25
     Returns ``list[dict]`` on success. On ANY failure returns a structured
     error envelope ``{"error": {"code": ..., "retryable": ...}}``.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
     limit = max(1, min(limit, 50))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
         # sort="asc" makes the service sort BEFORE truncating to limit —
         # re-sorting after fetch returned the smallest of the top GAINERS.
         rows = fetch_trending_analysis(exchange, timeframe=timeframe, limit=limit, sort="asc")
@@ -191,10 +191,10 @@ def bollinger_scan(exchange: str = "KUCOIN", timeframe: str = "4h", bbw_threshol
     Returns ``list[dict]`` on success. On ANY failure returns a structured
     error envelope ``{"error": {"code": ..., "retryable": ...}}``.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "4h")
     limit = max(1, min(limit, 100))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "4h")
         rows = fetch_bollinger_analysis(exchange, timeframe=timeframe, bbw_filter=bbw_threshold, limit=limit)
     except Exception as e:
         return exception_to_envelope(e, context="bollinger_scan")
@@ -214,11 +214,11 @@ def rating_filter(exchange: str = "KUCOIN", timeframe: str = "5m", rating: int =
     Returns ``list[dict]`` on success. On ANY failure returns a structured
     error envelope ``{"error": {"code": ..., "retryable": ...}}``.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "5m")
     rating = max(-3, min(3, rating))
     limit = max(1, min(limit, 50))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "5m")
         rows = fetch_trending_analysis(exchange, timeframe=timeframe, filter_type="rating", rating_filter=rating, limit=limit)
     except Exception as e:
         return exception_to_envelope(e, context="rating_filter")
@@ -247,9 +247,12 @@ def coin_analysis(symbol: str, exchange: str = "KUCOIN", timeframe: str = "15m")
     Returns:
         Detailed analysis with all indicators and metrics
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
-    return analyze_coin(symbol, exchange, timeframe)
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
+        return analyze_coin(symbol, exchange, timeframe)
+    except Exception as e:
+        return exception_to_envelope(e, context="coin_analysis")
 
 
 # ── Candle pattern tools ───────────────────────────────────────────────────────
@@ -273,12 +276,15 @@ def consecutive_candles_scan(
         min_growth: Minimum growth percentage for each candle
         limit: Maximum number of results to return
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
     candle_count = max(2, min(5, candle_count))
     min_growth = max(0.5, min(20.0, min_growth))
     limit = max(1, min(50, limit))
-    return scan_consecutive_candles(exchange, timeframe, pattern_type, candle_count, min_growth, limit)
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
+        return scan_consecutive_candles(exchange, timeframe, pattern_type, candle_count, min_growth, limit)
+    except Exception as e:
+        return exception_to_envelope(e, context="consecutive_candles_scan")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Candlestick Pattern Analysis", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -298,33 +304,45 @@ def advanced_candle_pattern(
         min_size_increase: Minimum percentage increase in candle size
         limit: Maximum number of results to return
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    base_timeframe = sanitize_timeframe(base_timeframe, "15m")
     pattern_length = max(2, min(4, pattern_length))
     min_size_increase = max(5.0, min(50.0, min_size_increase))
     limit = max(1, min(30, limit))
 
-    symbols = load_symbols(exchange)
-    if not symbols:
-        return {"error": f"No symbols found for exchange: {exchange}", "exchange": exchange}
-    symbols = symbols[: min(limit * 2, 100)]
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        base_timeframe = validate_timeframe(base_timeframe, "15m")
 
-    if TRADINGVIEW_SCREENER_AVAILABLE:
-        try:
-            results = fetch_multi_timeframe_patterns(exchange, symbols, base_timeframe, pattern_length, min_size_increase)
-            return {
-                "exchange": exchange,
-                "base_timeframe": base_timeframe,
-                "pattern_length": pattern_length,
-                "min_size_increase": min_size_increase,
-                "method": "multi-timeframe",
-                "total_found": len(results),
-                "data": results[:limit],
-            }
-        except Exception:
-            pass  # Fall through to single-timeframe fallback
+        symbols = load_symbols(exchange)
+        if not symbols:
+            return make_error(ErrorCode.NO_DATA, f"No symbols found for exchange: {exchange}", exchange=exchange)
+        symbols = symbols[: min(limit * 2, 100)]
 
-    return scan_advanced_candle_patterns_single_tf(exchange, symbols, base_timeframe, pattern_length, min_size_increase, limit)
+        fallback_reason = None
+        if TRADINGVIEW_SCREENER_AVAILABLE:
+            try:
+                results = fetch_multi_timeframe_patterns(exchange, symbols, base_timeframe, pattern_length, min_size_increase)
+                return {
+                    "exchange": exchange,
+                    "base_timeframe": base_timeframe,
+                    "pattern_length": pattern_length,
+                    "min_size_increase": min_size_increase,
+                    "method": "multi-timeframe",
+                    "total_found": len(results),
+                    "data": results[:limit],
+                }
+            except Exception as exc:
+                # Fall through to the single-timeframe fallback — but say so,
+                # instead of silently returning a different analysis method.
+                fallback_reason = repr(exc)
+        else:
+            fallback_reason = "tradingview-screener not installed"
+
+        result = scan_advanced_candle_patterns_single_tf(exchange, symbols, base_timeframe, pattern_length, min_size_increase, limit)
+        if isinstance(result, dict):
+            result["fallback_reason"] = fallback_reason
+        return result
+    except Exception as e:
+        return exception_to_envelope(e, context="advanced_candle_pattern")
 
 
 # ── Volume scanner tools ───────────────────────────────────────────────────────
@@ -351,12 +369,12 @@ async def volume_breakout_scanner(
     list now strictly means "no matches today"; rate-limit cliffs surface
     explicitly.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
     volume_multiplier = max(1.5, min(10.0, volume_multiplier))
     price_change_min = max(1.0, min(20.0, price_change_min))
     limit = max(1, min(limit, 50))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
         # volume_breakout_scan iterates many batches against the screener
         # endpoint (sync urllib). Off-load to a worker thread to keep the
         # event loop responsive for other concurrent tool calls.
@@ -377,9 +395,12 @@ def volume_confirmation_analysis(symbol: str, exchange: str = "KUCOIN", timefram
         exchange: Exchange name
         timeframe: Time frame for analysis
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
-    return volume_confirmation_analyze(symbol, exchange, timeframe)
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
+        return volume_confirmation_analyze(symbol, exchange, timeframe)
+    except Exception as e:
+        return exception_to_envelope(e, context="volume_confirmation_analysis")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Smart Volume Scanner", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -402,11 +423,11 @@ def smart_volume_scanner(
     Returns ``list[dict]`` on success. On ANY failure returns a structured
     error envelope ``{"error": {"code": ..., "retryable": ...}}``.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
     min_volume_ratio = max(1.2, min(10.0, min_volume_ratio))
     min_price_change = max(0.5, min(20.0, min_price_change))
     limit = max(1, min(limit, 30))
     try:
+        exchange = validate_exchange(exchange, "KUCOIN")
         return smart_volume_scan(exchange, min_volume_ratio, min_price_change, rsi_range, limit)
     except Exception as e:
         return exception_to_envelope(e, context="smart_volume_scanner")
@@ -426,10 +447,13 @@ def multi_agent_analysis(symbol: str, exchange: str = "KUCOIN", timeframe: str =
     Returns:
         A structured debate between 3 AI agents culminating in a final trading decision.
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    timeframe = sanitize_timeframe(timeframe, "15m")
-    full_symbol = normalize_tradingview_symbol(symbol, exchange)
-    return run_multi_agent_analysis(full_symbol, exchange, timeframe)
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        timeframe = validate_timeframe(timeframe, "15m")
+        full_symbol = normalize_tradingview_symbol(symbol, exchange)
+        return run_multi_agent_analysis(full_symbol, exchange, timeframe)
+    except Exception as e:
+        return exception_to_envelope(e, context="multi_agent_analysis")
 
 
 # ── EGX market tools ───────────────────────────────────────────────────────────
@@ -442,9 +466,12 @@ def egx_market_overview(timeframe: str = "1D", limit: int = 10) -> dict:
         timeframe: One of 5m, 15m, 1h, 4h, 1D, 1W, 1M (default 1D for stocks)
         limit: Number of stocks per category (max 20)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     limit = max(1, min(limit, 20))
-    return get_egx_market_overview(timeframe, limit)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return get_egx_market_overview(timeframe, limit)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_market_overview")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Sector Scan", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -457,9 +484,12 @@ def egx_sector_scan(sector: str = "", timeframe: str = "1D", limit: int = 20) ->
         timeframe: One of 5m, 15m, 1h, 4h, 1D, 1W, 1M
         limit: Max results per sector (max 50)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     limit = max(1, min(limit, 50))
-    return scan_egx_sector(sector, timeframe, limit)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return scan_egx_sector(sector, timeframe, limit)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_sector_scan")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Sector Rotation Scanner", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -477,11 +507,14 @@ def egx_sector_scanner(
         top_n_stocks: Number of top stocks per highlighted sector (1-10, default 3)
         min_stock_score: Minimum stock score for picks (0-100, default 60)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     top_n_sectors = max(1, min(18, top_n_sectors))
     top_n_stocks = max(1, min(10, top_n_stocks))
     min_stock_score = max(0, min(100, min_stock_score))
-    return run_egx_sector_scanner(timeframe, top_n_sectors, top_n_stocks, min_stock_score)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return run_egx_sector_scanner(timeframe, top_n_sectors, top_n_stocks, min_stock_score)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_sector_scanner")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Index Analysis", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -493,9 +526,12 @@ def egx_index_analysis(index: str = "EGX30", timeframe: str = "1D", limit: int =
         timeframe: One of 5m, 15m, 1h, 4h, 1D, 1W, 1M (default 1D)
         limit: Number of stocks to show in detail (max 100)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     limit = max(1, min(limit, 100))
-    return analyze_egx_index(index, timeframe, limit)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return analyze_egx_index(index, timeframe, limit)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_index_analysis")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Stock Screener", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -513,10 +549,13 @@ def egx_stock_screener(
         index_filter: Filter by index — EGX30, EGX70, EGX100, SHARIAH33, EGX35LV, TAMAYUZ
         limit: Number of results (max 50)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     min_score = max(0, min(100, min_score))
     limit = max(1, min(50, limit))
-    return screen_egx_stocks(timeframe, min_score, index_filter, limit)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return screen_egx_stocks(timeframe, min_score, index_filter, limit)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_stock_screener")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Trade Plan", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -527,8 +566,11 @@ def egx_trade_plan(symbol: str, timeframe: str = "1D") -> dict:
         symbol: EGX stock symbol (e.g., "COMI", "TMGH", "FWRY")
         timeframe: One of 5m, 15m, 1h, 4h, 1D, 1W, 1M (default 1D)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
-    return generate_egx_trade_plan(symbol, timeframe)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return generate_egx_trade_plan(symbol, timeframe)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_trade_plan")
 
 
 @mcp.tool(annotations=ToolAnnotations(title="EGX Fibonacci Retracement", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -540,9 +582,12 @@ def egx_fibonacci_retracement(symbol: str, lookback: str = "52W", timeframe: str
         lookback: Period for swing high/low — "1M", "3M", "6M", "52W", "ALL" (default 52W)
         timeframe: Analysis timeframe (5m, 15m, 1h, 4h, 1D, 1W, 1M — default 1D)
     """
-    timeframe = sanitize_timeframe(timeframe, "1D")
     lookback = lookback.strip().upper()
-    return analyze_egx_fibonacci(symbol, lookback, timeframe)
+    try:
+        timeframe = validate_timeframe(timeframe, "1D")
+        return analyze_egx_fibonacci(symbol, lookback, timeframe)
+    except Exception as e:
+        return exception_to_envelope(e, context="egx_fibonacci_retracement")
 
 
 # ── Multi-timeframe analysis ───────────────────────────────────────────────────
@@ -562,12 +607,15 @@ async def multi_timeframe_analysis(symbol: str, exchange: str = "KUCOIN") -> dic
         symbol: Bare ticker, no exchange prefix — crypto: "BTCUSDT"; stocks: "COMI" (EGX), "THYAO" (BIST), "600519" (SSE), "300251" (SZSE), "2330" (TWSE), "3105" (TPEX), "GDX" (AMEX)
         exchange: Exchange — crypto: KUCOIN, BINANCE, MEXC; stocks: EGX, BIST, NASDAQ, NYSE, AMEX, NYSEARCA, PCX, SSE, SZSE, TWSE, TPEX
     """
-    exchange = sanitize_exchange(exchange, "KUCOIN")
-    full_symbol = normalize_tradingview_symbol(symbol, exchange)
-    # tradingview_ta backs this with a single threading.Semaphore-gated
-    # request; pushing the whole call to a thread keeps the event loop
-    # free while we wait on the upstream HTTP.
-    return await asyncio.to_thread(run_multi_timeframe_analysis, full_symbol, exchange)
+    try:
+        exchange = validate_exchange(exchange, "KUCOIN")
+        full_symbol = normalize_tradingview_symbol(symbol, exchange)
+        # tradingview_ta backs this with a single threading.Semaphore-gated
+        # request; pushing the whole call to a thread keeps the event loop
+        # free while we wait on the upstream HTTP.
+        return await asyncio.to_thread(run_multi_timeframe_analysis, full_symbol, exchange)
+    except Exception as e:
+        return exception_to_envelope(e, context="multi_timeframe_analysis")
 
 
 # ── Sentiment & news tools ─────────────────────────────────────────────────────
@@ -585,7 +633,7 @@ def market_sentiment(symbol: str, category: str = "all", limit: int = 20) -> dic
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Financial News Feed", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
-async def financial_news(symbol: str = None, category: str = "stocks", limit: int = 10) -> dict:
+async def financial_news(symbol: Optional[str] = None, category: str = "stocks", limit: int = 10) -> dict:
     """Real-time financial news via Marketaux (licensed).
 
     Args:
@@ -613,8 +661,11 @@ async def combined_analysis(symbol: str, exchange: str = "NASDAQ", timeframe: st
         exchange: Exchange (NASDAQ, NYSE, AMEX, NYSEARCA, PCX, BINANCE, KUCOIN, MEXC, BIST, EGX, TWSE, TPEX)
         timeframe: Analysis timeframe (5m, 15m, 1h, 4h, 1D, 1W)
     """
-    exchange_clean = sanitize_exchange(exchange, "NASDAQ")
-    timeframe_clean = sanitize_timeframe(timeframe, "1D")
+    try:
+        exchange_clean = validate_exchange(exchange, "NASDAQ")
+        timeframe_clean = validate_timeframe(timeframe, "1D")
+    except Exception as e:
+        return exception_to_envelope(e, context="combined_analysis")
     cat = "crypto" if exchange_clean.upper() in ["BINANCE", "KUCOIN", "BYBIT", "MEXC"] else "stocks"
 
     # The three sub-calls hit independent upstreams (TradingView TA,
@@ -623,11 +674,20 @@ async def combined_analysis(symbol: str, exchange: str = "NASDAQ", timeframe: st
     # The TA throttle (threading.Semaphore in screener_provider) still
     # caps in-flight TV calls correctly because asyncio.to_thread runs
     # the sync call in a worker thread that respects the semaphore.
+    # return_exceptions so one failing upstream degrades its own section to
+    # an error envelope instead of crashing the whole tool.
     tech, sentiment, news = await asyncio.gather(
         asyncio.to_thread(analyze_coin, symbol, exchange_clean, timeframe_clean),
         asyncio.to_thread(analyze_sentiment, symbol, cat),
         asyncio.to_thread(fetch_news_summary, symbol, cat, 5),
+        return_exceptions=True,
     )
+    if isinstance(tech, BaseException):
+        tech = exception_to_envelope(tech, context="combined_analysis.technical")
+    if isinstance(sentiment, BaseException):
+        sentiment = exception_to_envelope(sentiment, context="combined_analysis.sentiment")
+    if isinstance(news, BaseException):
+        news = exception_to_envelope(news, context="combined_analysis.news")
 
     tech_momentum = tech.get("market_sentiment", {}).get("momentum", "") if isinstance(tech, dict) else ""
     tech_bullish = tech_momentum == "Bullish"
@@ -1057,7 +1117,9 @@ def exchanges_list() -> str:
                 return f"Available exchanges: {', '.join(sorted(exchanges))}"
     except Exception:
         pass
-    return "Common exchanges: KUCOIN, BINANCE, BYBIT, MEXC, BITGET, OKX, COINBASE, GATEIO, HUOBI, BITFINEX, KRAKEN, BITSTAMP, BIST, EGX, NASDAQ, TWSE, TPEX"
+    # Fallback must only name venues sanitize/validate actually accept —
+    # this list used to advertise KRAKEN and BITSTAMP, which are unsupported.
+    return "Common exchanges: KUCOIN, BINANCE, BYBIT, MEXC, BITGET, OKX, COINBASE, GATEIO, HUOBI, BITFINEX, BIST, EGX, NASDAQ, NYSE, TWSE, TPEX"
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
