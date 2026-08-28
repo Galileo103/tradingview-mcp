@@ -776,6 +776,8 @@ def analyze_coin(
                         "stop_distance_pct": setup["stop_distance_pct"],
                         "targets": setup["targets"],
                         "risk_reward": setup["risk_reward"],
+                        "scenarios": setup.get("scenarios", {}),
+                        "primary_scenario": setup.get("primary_scenario"),
                         "supports": setup["supports"],
                         "resistances": setup["resistances"],
                     }

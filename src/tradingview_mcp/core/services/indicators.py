@@ -1205,7 +1205,12 @@ def compute_stock_score(indicators: Dict, change_pct_rank: Optional[float] = Non
 def compute_trade_setup(indicators: Dict) -> Optional[Dict]:
     """Generate entry points, stop-loss, targets, and S/R levels.
 
-    Only call this for stocks that pass the stock score threshold (>=70).
+    Every scenario (pullback / breakout / market-fallback) anchors its stop,
+    targets and R:R to ITS OWN entry price. The legacy top-level fields
+    (``stop_loss``, ``targets``, ``risk_reward``) mirror the primary scenario,
+    so entry/stop/targets/R:R always describe one coherent trade
+    (stop < entry < target_1 for longs). Per-scenario plans live under
+    ``scenarios`` with the chosen one named in ``primary_scenario``.
     """
     close = indicators.get("close")
     high = indicators.get("high")
@@ -1277,35 +1282,89 @@ def compute_trade_setup(indicators: Dict) -> Optional[Dict]:
     if pullback_entry:
         setup_types.append("pullback")
 
-    # ── Stop-Loss ─────────────────────────────────────────────────────────
-    # Tighter of: below nearest support by 0.5×ATR, or entry - 1.5×ATR
+    # ── Per-scenario stop / targets / R:R ────────────────────────────────
+    # Each scenario anchors everything to ITS OWN entry. (Previously the
+    # stop and R:R were anchored to the close while the entry came from
+    # EMA20/resistance — on stocks trading far above their EMA20 that
+    # produced plans whose entry sat BELOW the stop, and R:R numbers that
+    # graded a trade nobody planned to take.)
 
-    atr_stop = _safe_round(close - 1.5 * atr, 2)
-    support_stop = None
-    if supports:
-        support_stop = _safe_round(supports[0] - 0.5 * atr, 2)
+    def _build_scenario(kind: str, raw_entry: float) -> Optional[Dict]:
+        entry = _safe_round(raw_entry, 2)
+        if not entry or entry <= 0:
+            return None
 
-    if support_stop and atr_stop:
-        stop_loss = max(support_stop, atr_stop)  # Tighter of the two
-    elif support_stop:
-        stop_loss = support_stop
+        # Tighter of: 0.5×ATR below the nearest support UNDER the entry,
+        # or 1.5×ATR below the entry itself.
+        stop_candidates = [entry - 1.5 * atr]
+        sup_below = [s for s in supports if s < entry]
+        if sup_below:
+            stop_candidates.append(sup_below[0] - 0.5 * atr)
+        stop = _safe_round(max(stop_candidates), 2)
+        if stop is None or stop >= entry:
+            stop = _safe_round(entry - 1.0 * atr, 2)
+        if stop is None or stop >= entry or stop <= 0:
+            return None
+
+        stop_pct = ((entry - stop) / entry) * 100
+        if stop_pct < 0.5:  # unrealistically tight — widen to 1 ATR
+            stop = _safe_round(entry - 1.0 * atr, 2)
+            if stop is None or stop >= entry or stop <= 0:
+                return None
+            stop_pct = ((entry - stop) / entry) * 100
+
+        # Targets must sit strictly ABOVE this scenario's entry.
+        res_above = [r for r in resistances if r > entry]
+        target_1 = res_above[0] if res_above else _safe_round(entry + 1.5 * atr, 2)
+        target_2 = res_above[1] if len(res_above) >= 2 else _safe_round(entry + 3.0 * atr, 2)
+        if target_1 and target_2 and target_2 <= target_1:
+            target_2 = _safe_round(entry + 3.0 * atr, 2)
+
+        risk = entry - stop
+        rr_1 = _safe_round((target_1 - entry) / risk, 1) if target_1 else None
+        rr_2 = _safe_round((target_2 - entry) / risk, 1) if target_2 else None
+
+        return {
+            "type": kind,
+            "entry": entry,
+            "stop_loss": stop,
+            "stop_distance_pct": _safe_round(stop_pct, 2),
+            "targets": {"target_1": target_1, "target_2": target_2},
+            "risk_reward": {"to_target_1": rr_1, "to_target_2": rr_2},
+        }
+
+    scenarios: Dict[str, Dict] = {}
+    if pullback_entry:
+        sc = _build_scenario("pullback", pullback_entry)
+        if sc:
+            scenarios["pullback"] = sc
+    if breakout_entry:
+        sc = _build_scenario("breakout", breakout_entry)
+        if sc:
+            scenarios["breakout"] = sc
+    if not scenarios:
+        # No S/R-derived entries — plan an at-market trade so callers still
+        # get one coherent set of levels.
+        sc = _build_scenario("market", close)
+        if sc:
+            scenarios["market"] = sc
+            setup_types.append("market")
+
+    if not scenarios:
+        return None
+
+    # The primary scenario drives the legacy top-level fields. Pullback
+    # first (its entry is what UIs prefill), then breakout, then market.
+    if "pullback" in scenarios:
+        primary_name = "pullback"
+    elif "breakout" in scenarios:
+        primary_name = "breakout"
     else:
-        stop_loss = atr_stop
+        primary_name = "market"
+    primary = scenarios[primary_name]
 
-    # Validate stop isn't unrealistically tight (<0.5% from close) or wide (>10%)
-    stop_pct = ((close - stop_loss) / close) * 100 if stop_loss else None
-    if stop_pct is not None and stop_pct < 0.5:
-        stop_loss = _safe_round(close - 1.0 * atr, 2)
-        stop_pct = ((close - stop_loss) / close) * 100
-
-    # ── Targets ───────────────────────────────────────────────────────────
-    target_1 = resistances[0] if len(resistances) >= 1 else _safe_round(close + 1.5 * atr, 2)
-    target_2 = resistances[1] if len(resistances) >= 2 else _safe_round(close + 3.0 * atr, 2)
-
-    # ── Risk/Reward Ratios ────────────────────────────────────────────────
-    risk = close - stop_loss if stop_loss else None
-    rr_1 = _safe_round((target_1 - close) / risk, 1) if risk and risk > 0 else None
-    rr_2 = _safe_round((target_2 - close) / risk, 1) if risk and risk > 0 else None
+    rr_1 = primary["risk_reward"]["to_target_1"]
+    rr_2 = primary["risk_reward"]["to_target_2"]
 
     # R:R quality
     rr_quality = "Weak"
@@ -1322,17 +1381,19 @@ def compute_trade_setup(indicators: Dict) -> Optional[Dict]:
             "breakout_entry": breakout_entry,
             "pullback_entry": pullback_entry,
         },
-        "stop_loss": stop_loss,
-        "stop_distance_pct": _safe_round(stop_pct, 2),
-        "targets": {
-            "target_1": target_1,
-            "target_2": target_2,
-        },
+        # Legacy top-level levels mirror the PRIMARY scenario so that
+        # entry/stop/targets/R:R always describe one coherent trade.
+        "stop_loss": primary["stop_loss"],
+        "stop_distance_pct": primary["stop_distance_pct"],
+        "targets": dict(primary["targets"]),
         "risk_reward": {
             "to_target_1": rr_1,
             "to_target_2": rr_2,
             "quality": rr_quality,
+            "measured_from_entry": primary["entry"],
         },
+        "scenarios": scenarios,
+        "primary_scenario": primary_name,
         "supports": supports,
         "resistances": resistances,
     }

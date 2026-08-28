@@ -569,6 +569,8 @@ def run_egx_sector_scanner(
                         "stop_distance_pct": setup["stop_distance_pct"],
                         "targets": setup["targets"],
                         "risk_reward": setup["risk_reward"],
+                        "scenarios": setup.get("scenarios", {}),
+                        "primary_scenario": setup.get("primary_scenario"),
                         "supports": setup["supports"],
                         "resistances": setup["resistances"],
                     }
@@ -855,6 +857,8 @@ def screen_egx_stocks(
                         "stop_distance_pct": setup["stop_distance_pct"],
                         "targets": setup["targets"],
                         "risk_reward": setup["risk_reward"],
+                        "scenarios": setup.get("scenarios", {}),
+                        "primary_scenario": setup.get("primary_scenario"),
                         "supports": setup["supports"],
                         "resistances": setup["resistances"],
                     }
@@ -979,6 +983,8 @@ def generate_egx_trade_plan(symbol: str, timeframe: str = "1D") -> dict:
             "stop_distance_pct": setup["stop_distance_pct"],
             "targets": setup["targets"],
             "risk_reward": setup["risk_reward"],
+            "scenarios": setup.get("scenarios", {}),
+            "primary_scenario": setup.get("primary_scenario"),
             "supports": setup["supports"],
             "resistances": setup["resistances"],
         }
