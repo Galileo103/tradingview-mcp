@@ -34,8 +34,11 @@ _VALID_INTERVALS = {"1d", "1h"}
 
 # Annualization factor for Sharpe ratio
 # Bars per year: 252 trading days; US regular session is 6.5 hours → 6.5
-# hourly bars per day.
+# hourly bars per day. Callers on other markets (e.g. EGX: ~245 sessions of
+# 4.5h, EGP risk-free ~25%) should pass periods_per_year / risk_free_rate
+# explicitly — these are US-market defaults.
 _ANNUALIZATION = {"1d": 252, "1h": int(252 * 6.5)}
+_DEFAULT_RISK_FREE = 0.04  # annual, decimal
 
 _STRATEGY_LABELS = {
     "rsi":              "RSI Oversold/Overbought",
@@ -57,7 +60,7 @@ _SMA200_MIN_BARS  = 220
 # ─── Data Fetching ────────────────────────────────────────────────────────────
 
 def _fetch_ohlcv(symbol: str, period: str, interval: str = "1d") -> list[dict]:
-    url = f"{_YF_BASE}/{symbol}?interval={interval}&range={period}"
+    url = f"{_YF_BASE}/{symbol}?interval={interval}&range={period}&includeAdjustedClose=true"
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
 
     data = None
@@ -81,11 +84,24 @@ def _fetch_ohlcv(symbol: str, period: str, interval: str = "1d") -> list[dict]:
     q          = result["indicators"]["quote"][0]
     date_fmt   = "%Y-%m-%d %H:%M" if interval == "1h" else "%Y-%m-%d"
 
+    # Dividend/split adjustment: Yahoo's quote array is split-adjusted only.
+    # High-yield markets (EGX pays 5-15% cash) book phantom losses on ex-div
+    # gaps and understate buy-and-hold without this. Scale OHLC by the
+    # per-bar adjclose/close factor when Yahoo provides adjclose (daily bars).
+    adj = None
+    try:
+        adj = result["indicators"]["adjclose"][0]["adjclose"]
+    except (KeyError, IndexError, TypeError):
+        adj = None
+
     candles = []
     for i, ts in enumerate(timestamps):
         o, h, l, c, v = q["open"][i], q["high"][i], q["low"][i], q["close"][i], q["volume"][i]
         if None in (o, h, l, c):
             continue
+        if adj is not None and i < len(adj) and adj[i] and c:
+            factor = adj[i] / c
+            o, h, l, c = o * factor, h * factor, l * factor, adj[i]
         candles.append({
             "date":   datetime.fromtimestamp(ts, tz=timezone.utc).strftime(date_fmt),
             "open":   round(o, 4),
@@ -441,6 +457,8 @@ def _calc_metrics(
     initial_capital: float,
     interval: str = "1d",
     candles: Optional[list[dict]] = None,
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
 ) -> dict:
     """Trade metrics. When `candles` is provided, drawdown/Calmar/Sharpe come
     from the per-bar mark-to-market equity series (intra-trade dips count and
@@ -492,13 +510,14 @@ def _calc_metrics(
     gl            = abs(sum(t["return_pct"] for t in losers))
     profit_factor = round(gp / gl, 2) if gl > 0 else float("inf")
 
-    ann  = _ANNUALIZATION.get(interval, 252)
+    ann = periods_per_year or _ANNUALIZATION.get(interval, 252)
+    rf  = _DEFAULT_RISK_FREE if risk_free_rate is None else risk_free_rate
     sharpe = 0.0
     if len(returns) > 1:
         mean_r = statistics.mean(returns)
         std_r  = statistics.stdev(returns)
         if std_r > 0:
-            sharpe = round((mean_r - 0.04 / ann) / std_r * math.sqrt(ann), 2)
+            sharpe = round((mean_r - rf / ann) / std_r * math.sqrt(ann), 2)
 
     calmar = round(total_return / max_dd, 2) if max_dd > 0 else 0.0
 
@@ -519,6 +538,8 @@ def _calc_metrics(
         "max_drawdown_pct": round(-max_dd, 2),
         "profit_factor":    profit_factor,
         "sharpe_ratio":     sharpe,
+        "sharpe_risk_free_pct":     round(rf * 100, 2),
+        "sharpe_periods_per_year":  ann,
         "calmar_ratio":     calmar,
         "expectancy_pct":   expectancy,
         "best_trade":       {k: best[k]  for k in ("entry_date", "exit_date", "return_pct")},
@@ -587,6 +608,8 @@ def run_backtest(
     interval: str = "1d",
     include_trade_log: bool = False,
     include_equity_curve: bool = False,
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
 ) -> dict:
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
@@ -619,7 +642,8 @@ def run_backtest(
 
     raw_trades = _STRATEGY_MAP[strategy](candles)
     trades     = _apply_costs(raw_trades, commission_pct, slippage_pct)
-    metrics    = _calc_metrics(trades, initial_capital, interval, candles=candles)
+    metrics    = _calc_metrics(trades, initial_capital, interval, candles=candles,
+                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
     bnh        = _buy_and_hold_return(candles, commission_pct, slippage_pct)
 
     result = {
@@ -662,6 +686,8 @@ def compare_strategies(
     commission_pct: float = 0.1,
     slippage_pct: float = 0.05,
     interval: str = "1d",
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
 ) -> dict:
     """Run all 9 strategies on one symbol. Supports 1d and 1h intervals."""
     period   = period.lower().strip()
@@ -690,7 +716,8 @@ def compare_strategies(
     for strat, fn in _STRATEGY_MAP.items():
         raw    = fn(candles)
         trades = _apply_costs(raw, commission_pct, slippage_pct)
-        m      = _calc_metrics(trades, initial_capital, interval, candles=candles)
+        m      = _calc_metrics(trades, initial_capital, interval, candles=candles,
+                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
         results.append({
             "strategy":         strat,
             "strategy_label":   _STRATEGY_LABELS[strat],
@@ -748,6 +775,8 @@ def walk_forward_backtest(
     n_splits: int = 3,
     train_ratio: float = 0.7,
     interval: str = "1d",
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
 ) -> dict:
     """
     Walk-forward backtesting — detect overfitting via train/test splits.
@@ -827,8 +856,10 @@ def walk_forward_backtest(
 
         train_t = _apply_costs(fn(train_c), commission_pct, slippage_pct)
         test_t  = _apply_costs(fn(test_c),  commission_pct, slippage_pct)
-        train_m = _calc_metrics(train_t, initial_capital, interval, candles=train_c)
-        test_m  = _calc_metrics(test_t,  initial_capital, interval, candles=test_c)
+        train_m = _calc_metrics(train_t, initial_capital, interval, candles=train_c,
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+        test_m  = _calc_metrics(test_t,  initial_capital, interval, candles=test_c,
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
 
         all_test_trades.extend(test_t)
 
@@ -879,7 +910,8 @@ def walk_forward_backtest(
     avg_train  = round(statistics.mean(f["train_return_pct"] for f in scored_folds), 2)
     avg_test   = round(statistics.mean(f["test_return_pct"]  for f in scored_folds), 2)
     avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in scored_folds), 2)
-    oos_m      = _calc_metrics(all_test_trades, initial_capital, interval)
+    oos_m      = _calc_metrics(all_test_trades, initial_capital, interval,
+                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
 
     if avg_robust >= 0.8:
         verdict = "ROBUST — strategy performs consistently in-sample and out-of-sample"
