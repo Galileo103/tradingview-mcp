@@ -157,9 +157,9 @@ def run_multi_agent_analysis(
     bb_rating = metrics.get("rating") or 0
     bbw = metrics.get("bbw") or 0.0  # compute_metrics returns bbw=None sometimes
 
-    # Agent 1 — Technical Analyst
+    # Rule set 1 — Bollinger/price checklist
     tech_analyst = {
-        "role": "Technical Analyst",
+        "role": "Trend & Bands (rule set)",
         "stance": "Bullish" if bb_rating > 0 else "Bearish" if bb_rating < 0 else "Neutral",
         "score": bb_rating,
         "key_observations": [
@@ -169,10 +169,11 @@ def run_multi_agent_analysis(
         ],
     }
 
-    # Agent 2 — Sentiment Analyst
+    # Rule set 2 — momentum checklist (RSI/MACD only; no news or sentiment
+    # source feeds this, so it must not be labeled "sentiment").
     sentiment_data = calculate_sentiment_score(indicators, change)
     sentiment_analyst = {
-        "role": "Sentiment & Momentum Analyst",
+        "role": "Momentum (RSI/MACD rule set)",
         "stance": (
             "Bullish" if sentiment_data["normalized"] > 0
             else "Bearish" if sentiment_data["normalized"] < 0
@@ -182,10 +183,10 @@ def run_multi_agent_analysis(
         "key_observations": sentiment_data["signals"],
     }
 
-    # Agent 3 — Risk Manager
+    # Rule set 3 — volatility/structure checklist
     risk_data = calculate_risk_score(indicators, bbw)
     risk_manager = {
-        "role": "Risk Manager",
+        "role": "Volatility & Structure (rule set)",
         "risk_level": risk_data["level"],
         "risk_score": risk_data["score"],
         "warnings": risk_data["warnings"],
@@ -198,19 +199,26 @@ def run_multi_agent_analysis(
         + risk_manager["risk_score"]
     )
 
+    # "confidence" here is rule agreement, not a probability — the wording
+    # must never suggest conviction the underlying single snapshot can't carry.
     if total_score >= 3 and risk_manager["risk_level"] != "High":
-        final_decision, confidence = "STRONG BUY", "High"
+        final_decision, confidence = "BUY (strong rule alignment)", "rules strongly aligned"
     elif total_score > 0:
-        final_decision, confidence = "BUY", "Medium"
+        final_decision, confidence = "BUY (mixed rules)", "rules partially aligned"
     elif total_score <= -3:
-        final_decision, confidence = "STRONG SELL", "High"
+        final_decision, confidence = "SELL (strong rule alignment)", "rules strongly aligned"
     elif total_score < 0:
-        final_decision, confidence = "SELL", "Medium"
+        final_decision, confidence = "SELL (mixed rules)", "rules partially aligned"
     else:
-        final_decision, confidence = "HOLD", "Low"
+        final_decision, confidence = "HOLD", "rules disagree"
 
     return {
-        "framework_name": "TradingAgents-MCP Pipeline",
+        "framework_name": "Rule-Based Signal Summary",
+        "method_note": (
+            "Deterministic indicator checklist computed from a single delayed "
+            "snapshot. This is not an AI debate, contains no news/sentiment "
+            "input, and the decision is a threshold artifact, not a probability."
+        ),
         "target": symbol,
         "timeframe": timeframe,
         "agents_debate": {
@@ -223,9 +231,9 @@ def run_multi_agent_analysis(
             "confidence": confidence,
             "net_score": total_score,
             "summary": (
-                f"Technical score: {tech_analyst['score']}, "
-                f"Sentiment score: {sentiment_analyst['score']}, "
-                f"Risk adjustment: {risk_manager['risk_score']}"
+                f"Bands score: {tech_analyst['score']}, "
+                f"Momentum score: {sentiment_analyst['score']}, "
+                f"Volatility adjustment: {risk_manager['risk_score']}"
             ),
         },
     }
