@@ -136,19 +136,28 @@ def fetch_bollinger_analysis(
             exchange=exchange, retryable=False,
         )
 
-    symbols = symbols[: limit * 2]
+    # Scan the FULL symbol list in batches. The old `symbols[: limit * 2]`
+    # truncation meant only the alphabetical head of the exchange was ever
+    # screened — on EGX (292 names, sorted) mid-alphabet symbols could never
+    # appear in squeeze results regardless of their setups.
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
-
-    try:
-        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=symbols)
-    except Exception as exc:
-        # Single-shot fetch (no batching here): a failure is an upstream
-        # problem, and TradingView storms pass — mark it retryable.
+    analysis: dict = {}
+    batch_errors = 0
+    batch_size = 200
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i : i + batch_size]
+        try:
+            analysis.update(
+                get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+            )
+        except Exception:
+            batch_errors += 1
+    if not analysis:
         raise ScreenerServiceError(
             ErrorCode.UPSTREAM_ERROR,
-            f"Analysis failed: {humanize_upstream_error(exc)}",
+            "Analysis failed for every batch — upstream storm; retry shortly.",
             retryable=True,
-        ) from exc
+        )
 
     rows: List[Row] = []
     for key, value in analysis.items():
@@ -872,15 +881,23 @@ def scan_consecutive_candles(
     if not symbols:
         return {"error": f"No symbols found for exchange: {exchange}", "exchange": exchange, "timeframe": timeframe}
 
-    symbols = symbols[: min(limit * 3, 200)]
+    # Full-universe batched scan (the old `symbols[: min(limit*3, 200)]`
+    # truncation silently limited the screen to the alphabetical head).
     screener = EXCHANGE_SCREENER.get(exchange, "crypto")
-
-    try:
-        analysis = get_multiple_analysis(screener=screener, interval=timeframe, symbols=symbols)
-    except Exception as exc:
+    analysis: dict = {}
+    batch_size = 200
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i : i + batch_size]
+        try:
+            analysis.update(
+                get_multiple_analysis(screener=screener, interval=timeframe, symbols=batch)
+            )
+        except Exception:
+            continue
+    if not analysis:
         return make_error(
             ErrorCode.UPSTREAM_ERROR,
-            f"Pattern analysis failed: {humanize_upstream_error(exc)}",
+            "Pattern analysis failed for every batch — upstream storm; retry shortly.",
             retryable=True, retry_after_s=60,
             exchange=exchange, timeframe=timeframe,
         )
@@ -906,13 +923,20 @@ def scan_consecutive_candles(
             candle_range = high_price - low_price
             body_to_range_ratio = candle_body / candle_range if candle_range > 0 else 0
 
-            rsi = indicators.get("RSI", 50)
-            sma20 = indicators.get("SMA20", close_price)
-            ema50 = indicators.get("EMA50", close_price)
+            # TradingView returns explicit nulls; .get defaults don't fire.
+            rsi = indicators.get("RSI")
+            rsi = 50.0 if rsi is None else rsi
+            sma20 = indicators.get("SMA20") or close_price
+            ema50 = indicators.get("EMA50") or close_price
 
             price_above_sma = close_price > sma20
             price_above_ema = close_price > ema50
 
+            # ALL conditions are mandatory. The old 3-of-5 vote let a FLAT bar
+            # pass (body + SMA + RSI + volume = 4/5 with zero price change),
+            # so the scanner fired on any mildly green day and polluted the
+            # candidates composite with hollow hits. `volume > 1000` shares is
+            # a crypto-era placeholder kept only as a dead-ticker floor.
             if pattern_type == "bullish":
                 conditions = [
                     current_change > min_growth,
@@ -933,7 +957,7 @@ def scan_consecutive_candles(
                 continue
 
             pattern_strength = sum(conditions)
-            if pattern_strength < 3:
+            if not all(conditions):
                 continue
 
             metrics = compute_metrics(indicators)
@@ -972,6 +996,11 @@ def scan_consecutive_candles(
         "pattern_type": pattern_type,
         "candle_count": candle_count,
         "min_growth": min_growth,
+        # Honesty: this scan inspects ONE completed bar per symbol. The
+        # multi-bar "consecutive" check is applied by callers with candle
+        # history (the EGX app verifies candle_count rising closes on Yahoo
+        # daily data before counting a hit).
+        "basis": "single-bar snapshot; consecutive-candle verification is the caller's",
         "total_found": len(pattern_coins),
         "data": pattern_coins[:limit],
     }
