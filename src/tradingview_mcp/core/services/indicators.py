@@ -28,10 +28,13 @@ def compute_bb_rating_signal(close: float, bb_upper: float, bb_middle: float, bb
     elif close < bb_middle:
         rating = -1
 
+    # A close beyond the band (|rating| == 3) is the strongest reading this
+    # measure produces — it must stay on its own side, never fall back to
+    # NEUTRAL (a breakout day previously read as a downgrade in signal_change).
     signal = "NEUTRAL"
-    if rating == 2:
+    if rating >= 2:
         signal = "BUY"
-    elif rating == -2:
+    elif rating <= -2:
         signal = "SELL"
     return rating, signal
 
